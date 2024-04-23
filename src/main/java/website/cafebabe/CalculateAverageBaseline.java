@@ -51,11 +51,12 @@ public class CalculateAverageBaseline {
         long startTime = System.currentTimeMillis();
 
         Map<String, ResultRow> measurements = new TreeMap<>(Files.lines(Paths.get(FILE))
+                .parallel()
                 .map(l -> new Measurement(l.split(";")))
                 .collect(groupingBy(Measurement::station, collector)));
 
         long cost = System.currentTimeMillis() - startTime;
-        System.out.println("Cost: " + cost + "ms."); // 263348ms.
+        System.out.println("Cost: " + cost + "ms."); // 161106ms.
         System.out.println(measurements);
     }
 
