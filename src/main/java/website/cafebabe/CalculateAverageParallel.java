@@ -18,13 +18,15 @@ package website.cafebabe;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.AbstractMap;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collector;
+import java.util.stream.Collectors;
 
 import static java.util.stream.Collectors.groupingBy;
 
-public class CalculateAverageBaseline {
+public class CalculateAverageParallel {
 
     private static final String FILE = "./measurements.txt";
 
@@ -51,6 +53,7 @@ public class CalculateAverageBaseline {
         long startTime = System.currentTimeMillis();
 
         Map<String, ResultRow> measurements = new TreeMap<>(Files.lines(Paths.get(FILE))
+                .parallel()
                 .map(l -> new Measurement(l.split(";")))
                 .collect(groupingBy(Measurement::station, collector)));
 
@@ -82,4 +85,5 @@ public class CalculateAverageBaseline {
         private double sum;
         private long count;
     }
+
 }

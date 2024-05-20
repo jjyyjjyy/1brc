@@ -1,0 +1,14 @@
+= 1brc
+
+|===
+| Stage | Cost Time
+
+| CalculateAverageBaseline
+| 308s
+
+| CalculateAverageParallel
+| 146s
+
+
+
+|===
