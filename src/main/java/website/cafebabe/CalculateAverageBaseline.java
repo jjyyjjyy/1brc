@@ -29,6 +29,8 @@ public class CalculateAverageBaseline {
     private static final String FILE = "./measurements.txt";
 
     public static void main(String[] args) throws IOException {
+        long startTime = System.currentTimeMillis();
+
         Collector<Measurement, MeasurementAggregator, ResultRow> collector = Collector.of(
                 MeasurementAggregator::new,
                 (a, m) -> {
@@ -47,8 +49,6 @@ public class CalculateAverageBaseline {
                     return res;
                 },
                 agg -> new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max));
-
-        long startTime = System.currentTimeMillis();
 
         Map<String, ResultRow> measurements = new TreeMap<>(Files.lines(Paths.get(FILE))
                 .map(l -> new Measurement(l.split(";")))

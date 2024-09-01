@@ -32,7 +32,6 @@ public class CalculateAverageMmap {
     private static final String FILE = "./measurements.txt";
 
     public static void main(String[] args) {
-
         long startTime = System.currentTimeMillis();
 
         File file = new File(FILE);

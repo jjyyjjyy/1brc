@@ -18,11 +18,9 @@ package website.cafebabe;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.AbstractMap;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collector;
-import java.util.stream.Collectors;
 
 import static java.util.stream.Collectors.groupingBy;
 
@@ -31,6 +29,8 @@ public class CalculateAverageParallel {
     private static final String FILE = "./measurements.txt";
 
     public static void main(String[] args) throws IOException {
+        long startTime = System.currentTimeMillis();
+
         Collector<Measurement, MeasurementAggregator, ResultRow> collector = Collector.of(
                 MeasurementAggregator::new,
                 (a, m) -> {
@@ -49,8 +49,6 @@ public class CalculateAverageParallel {
                     return res;
                 },
                 agg -> new ResultRow(agg.min, (Math.round(agg.sum * 10.0) / 10.0) / agg.count, agg.max));
-
-        long startTime = System.currentTimeMillis();
 
         Map<String, ResultRow> measurements = new TreeMap<>(Files.lines(Paths.get(FILE))
                 .parallel()

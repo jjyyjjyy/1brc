@@ -21,13 +21,14 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 
-public class CalculateAverageDoubleParse {
+public class CalculateAverageHashTable {
 
     private static final String FILE = "./measurements.txt";
 
@@ -87,10 +88,12 @@ public class CalculateAverageDoubleParse {
     }
 
     private static class ChunkProcessor implements Runnable {
+        private static final int HASHTABLE_SIZE = 2048;
         private final MemorySegment chunk;
         private final StationStats[][] results;
         private final int myIndex;
-        private final Map<String, StationStats> statsMap = new HashMap<>();
+        //        private final Map<String, StationStats> statsMap = new HashMap<>();
+        private final StatsAcc[] hashtable = new StatsAcc[HASHTABLE_SIZE];
 
         ChunkProcessor(MemorySegment chunk, StationStats[][] results, int myIndex) {
             this.chunk = chunk;
@@ -105,15 +108,46 @@ public class CalculateAverageDoubleParse {
                 long newlinePos = findByte(semicolonPos + 1, '\n');
                 int intTemp = parseTemperature(semicolonPos);
 
-                String name = stringAt(cursor, semicolonPos);
-                StationStats stats = statsMap.computeIfAbsent(name, k -> new StationStats(name));
+                StatsAcc stats = findAcc(cursor, semicolonPos);
                 stats.sum += intTemp;
                 stats.count++;
                 stats.min = Math.min(stats.min, intTemp);
                 stats.max = Math.max(stats.max, intTemp);
                 cursor = newlinePos + 1;
             }
-            results[myIndex] = statsMap.values().toArray(StationStats[]::new);
+            results[myIndex] = Arrays.stream(hashtable)
+                    .filter(Objects::nonNull)
+                    .map(acc -> new StationStats(acc, chunk))
+                    .toArray(StationStats[]::new);
+        }
+
+        private StatsAcc findAcc(long cursor, long semicolonPos) {
+            int hash = hash(cursor, semicolonPos);
+            int initialPos = hash & (HASHTABLE_SIZE - 1);
+            int slotPos = initialPos;
+            while (true) {
+                var acc = hashtable[slotPos];
+                if (acc == null) {
+                    acc = new StatsAcc(hash, cursor, semicolonPos - cursor);
+                    hashtable[slotPos] = acc;
+                    return acc;
+                }
+                if (acc.hash == hash && acc.nameEquals(chunk, cursor, semicolonPos)) {
+                    return acc;
+                }
+                slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
+                if (slotPos == initialPos) {
+                    throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
+                }
+            }
+        }
+
+        private int hash(long startOffset, long limitOffset) {
+            int h = 17;
+            for (long off = startOffset; off < limitOffset; off++) {
+                h = 31 * h + ((int) chunk.get(JAVA_BYTE, off) & 0xFF);
+            }
+            return h;
         }
 
         private int parseTemperature(long semicolonPos) {
@@ -154,6 +188,28 @@ public class CalculateAverageDoubleParse {
         }
     }
 
+    private static class StatsAcc {
+        private final long nameOffset;
+        private final long nameLen;
+        private final int hash;
+        long sum;
+        int count;
+        int min;
+        int max;
+
+        StatsAcc(int hash, long nameOffset, long nameLen) {
+            this.hash = hash;
+            this.nameOffset = nameOffset;
+            this.nameLen = nameLen;
+        }
+
+        public boolean nameEquals(MemorySegment chunk, long otherNameOffset, long otherNameLimit) {
+            var otherNameLen = otherNameLimit - otherNameOffset;
+            return nameLen == otherNameLen &&
+                    chunk.asSlice(nameOffset, nameLen).mismatch(chunk.asSlice(otherNameOffset, nameLen)) == -1;
+        }
+    }
+
 
     private static class StationStats implements Comparable<StationStats> {
         private final String name;
@@ -162,8 +218,12 @@ public class CalculateAverageDoubleParse {
         private int min;
         private int max;
 
-        public StationStats(String name) {
-            this.name = name;
+        StationStats(StatsAcc acc, MemorySegment chunk) {
+            this.name = new String(chunk.asSlice(acc.nameOffset, acc.nameLen).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
+            this.sum = acc.sum;
+            this.count = acc.count;
+            this.min = acc.min;
+            this.max = acc.max;
         }
 
         @Override
