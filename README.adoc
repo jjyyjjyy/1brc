@@ -1,14 +1,32 @@
 = 1brc
 
+Environment: 8C16T 2.4GHz, 16GB Heap
+
 |===
 | Stage | Cost Time
 
 | CalculateAverageBaseline
-| 308s
+| 222s
 
 | CalculateAverageParallel
-| 146s
+| 95s
 
+| CalculateAverageMmap
+| 45s
 
+| CalculateAverageDoubleParse
+| 25s
+
+| CalculateAverageHashTable
+| 13s
+
+| CalculateAverageSwar
+| 11s
+
+| CalculateAverageBranchMiss
+| 10s
+
+| CalculateAverageChunk
+| 9s
 
 |===
