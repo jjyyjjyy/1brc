@@ -27,7 +27,7 @@ import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 
-public class CalculateAverageMmap {
+public class CalculateAverageDoubleParse {
 
     private static final String FILE = "./measurements.txt";
 
@@ -104,10 +104,9 @@ public class CalculateAverageMmap {
             for (var cursor = 0L; cursor < chunk.byteSize(); ) {
                 long semicolonPos = findByte(cursor, ';');
                 long newlinePos = findByte(semicolonPos + 1, '\n');
-                String name = stringAt(cursor, semicolonPos);
-                double temp = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
-                int intTemp = (int) Math.round(10 * temp);
+                int intTemp = parseTemperature(semicolonPos);
 
+                String name = stringAt(cursor, semicolonPos);
                 StationStats stats = statsMap.computeIfAbsent(name, k -> new StationStats(name));
                 stats.sum += intTemp;
                 stats.count++;
@@ -116,6 +115,26 @@ public class CalculateAverageMmap {
                 cursor = newlinePos + 1;
             }
             results[myIndex] = statsMap.values().toArray(StationStats[]::new);
+        }
+
+        private int parseTemperature(long semicolonPos) {
+            long off = semicolonPos + 1;
+            int sign = 1;
+            byte b = chunk.get(JAVA_BYTE, off++);
+            if (b == '-') {
+                sign = -1;
+                b = chunk.get(JAVA_BYTE, off++);
+            }
+            int temp = b - '0';
+            b = chunk.get(JAVA_BYTE, off++);
+            if (b != '.') {
+                temp = 10 * temp + b - '0';
+                // we found two integer digits. The next char is definitely '.', skip it:
+                off++;
+            }
+            b = chunk.get(JAVA_BYTE, off);
+            temp = 10 * temp + b - '0';
+            return sign * temp;
         }
 
         private long findByte(long cursor, int b) {
