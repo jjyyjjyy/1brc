@@ -27,6 +27,9 @@ import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 
+/**
+ * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-1-parallelize-io">Optimization 1</a>
+ */
 public class CalculateAverageMmap {
 
     private static final String FILE = "./measurements.txt";

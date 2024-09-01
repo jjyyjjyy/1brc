@@ -32,7 +32,7 @@ import java.util.Objects;
 import java.util.TreeMap;
 
 /**
- * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-4-sunmiscunsafe-swar">SWAR</a>
+ * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-4-sunmiscunsafe-swar">Optimization 4</a>
  */
 public class CalculateAverageSwar {
 

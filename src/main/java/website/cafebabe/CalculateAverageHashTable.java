@@ -28,6 +28,9 @@ import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 
+/**
+ * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-3-custom-hashtable">Optimization 3</a>
+ */
 public class CalculateAverageHashTable {
 
     private static final String FILE = "./measurements.txt";

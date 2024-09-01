@@ -27,6 +27,9 @@ import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 
+/**
+ * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-2-directly-parse-temperature-as-int">Optimization 2</a>
+ */
 public class CalculateAverageDoubleParse {
 
     private static final String FILE = "./measurements.txt";

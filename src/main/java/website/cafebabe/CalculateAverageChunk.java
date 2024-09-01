@@ -20,7 +20,6 @@ import sun.misc.Unsafe;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -30,14 +29,19 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-5-win-with-statistics">Optimization 5</a>
+ * <a href="https://questdb.io/blog/billion-row-challenge-step-by-step/#optimization-7-use-smaller-chunks-and-work-stealing">Optimization 7</a>
  */
-public class CalculateAverageBranchMiss {
-
-    private static final Unsafe UNSAFE = unsafe();
+public class CalculateAverageChunk {
     private static final String FILE = "./measurements.txt";
+    private static final int CHUNK_SIZE = 2 * 1024 * 1024;
+    private static final AtomicInteger chunkSelector = new AtomicInteger();
+    private static final Unsafe UNSAFE = unsafe();
+    private static int chunkCount;
+    private static StationStats[][] results;
+    private static long baseAddress;
 
     private static Unsafe unsafe() {
         try {
@@ -49,30 +53,30 @@ public class CalculateAverageBranchMiss {
         }
     }
 
+    static long getLong(long address) {
+        return UNSAFE.getLong(address);
+    }
+
+    static byte getByte(long address) {
+        return UNSAFE.getByte(address);
+    }
+
+
     public static void main(String[] args) {
         long startTime = System.currentTimeMillis();
 
         File file = new File(FILE);
         long length = file.length();
-        int chunkCount = Runtime.getRuntime().availableProcessors();
-        StationStats[][] results = new StationStats[chunkCount][];
-        long[] chunkOffsets = new long[chunkCount];
+        chunkCount = (int) ((length / CHUNK_SIZE - 1) + 1);
+        int threadCount = Runtime.getRuntime().availableProcessors();
+        results = new StationStats[threadCount][];
 
         try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            for (int i = 0; i < chunkOffsets.length; i++) {
-                long start = length * i / chunkCount;
-                raf.seek(start);
-                while (raf.read() != (byte) '\n') {
-                }
-                start = raf.getFilePointer();
-                chunkOffsets[i] = start;
-            }
-            MemorySegment mappedFile = raf.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, length, Arena.global());
-            Thread[] threads = new Thread[chunkCount];
-            for (int i = 0; i < chunkCount; i++) {
-                long start = chunkOffsets[i];
-                long limit = ((i + 1) < chunkCount) ? chunkOffsets[i + 1] : length;
-                threads[i] = new Thread(new ChunkProcessor(mappedFile.asSlice(start, limit - start), results, i));
+            final var mappedFile = raf.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, length, Arena.global());
+            baseAddress = mappedFile.address();
+            var threads = new Thread[threadCount];
+            for (int i = 0; i < threadCount; i++) {
+                threads[i] = new Thread(new ChunkProcessor(i));
             }
 
             for (Thread thread : threads) {
@@ -104,12 +108,6 @@ public class CalculateAverageBranchMiss {
         System.out.println(measurements);
     }
 
-    static String longToString(long word) {
-        final ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder());
-        buf.clear();
-        buf.putLong(word);
-        return new String(buf.array(), StandardCharsets.UTF_8);
-    }
 
     private static class ChunkProcessor implements Runnable {
         private static final int HASHTABLE_SIZE = 4096;
@@ -118,16 +116,10 @@ public class CalculateAverageBranchMiss {
         private static final long BROADCAST_0x80 = 0x8080808080808080L;
         private static final long DOT_BITS = 0x10101000;
         private static final long MAGIC_MULTIPLIER = (100 * 0x1000000 + 10 * 0x10000 + 1);
-        private final long inputBase;
-        private final long inputSize;
-        private final StationStats[][] results;
         private final int myIndex;
-        private final StatsAcc[] hashTable = new StatsAcc[HASHTABLE_SIZE];
+        private final StatsAcc[] hashtable = new StatsAcc[HASHTABLE_SIZE];
 
-        ChunkProcessor(MemorySegment chunk, StationStats[][] results, int myIndex) {
-            this.inputBase = chunk.address();
-            this.inputSize = chunk.byteSize();
-            this.results = results;
+        ChunkProcessor(int myIndex) {
             this.myIndex = myIndex;
         }
 
@@ -142,9 +134,8 @@ public class CalculateAverageBranchMiss {
             return word & mask;
         }
 
-        // The 4th binary digit of the ascii of a digit is 1 while
-        // that of the '.' is 0. This finds the decimal separator.
-        // The value can be 12, 20, 28
+        // Bit 4 of the ascii of a digit is 1, while that of '.' is 0.
+        // This finds the decimal separator. The value can be 12, 20, 28.
         private static int dotPos(long word) {
             return Long.numberOfTrailingZeros(~word & DOT_BITS);
         }
@@ -162,7 +153,7 @@ public class CalculateAverageBranchMiss {
 
             // Multiply by a magic (100 * 0x1000000 + 10 * 0x10000 + 1), to get the result
             final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
-            // And apply the sign
+            // And apply sign
             return (int) ((absValue + signed) ^ signed);
         }
 
@@ -176,14 +167,33 @@ public class CalculateAverageBranchMiss {
 
         @Override
         public void run() {
-            processChunk();
-            results[myIndex] = Arrays.stream(hashTable).filter(Objects::nonNull).map(StationStats::new).toArray(StationStats[]::new);
+            while (true) {
+                var selectedChunk = chunkSelector.getAndIncrement();
+                if (selectedChunk >= chunkCount) {
+                    break;
+                }
+                var chunkBase = baseAddress + (long) selectedChunk * CHUNK_SIZE;
+                var chunkLimit = baseAddress + (long) (selectedChunk + 1) * CHUNK_SIZE;
+                if (selectedChunk > 0) {
+                    chunkBase--;
+                    while (getByte(chunkBase) != '\n') {
+                        chunkBase++;
+                    }
+                    chunkBase++;
+                }
+                processChunk(chunkBase, chunkLimit);
+            }
+            results[myIndex] = Arrays
+                    .stream(hashtable)
+                    .filter(Objects::nonNull)
+                    .map(StationStats::new)
+                    .toArray(StationStats[]::new);
         }
 
-        private void processChunk() {
-            long cursor = 0;
+        private void processChunk(long chunkBase, long chunkLimit) {
+            long cursor = chunkBase;
             long lastNameWord;
-            while (cursor < inputSize) {
+            while (cursor < chunkLimit) {
                 long nameStartOffset = cursor;
                 long nameWord0 = getLong(nameStartOffset);
                 long nameWord1 = getLong(nameStartOffset + Long.BYTES);
@@ -198,13 +208,10 @@ public class CalculateAverageBranchMiss {
                     int nameLen0 = nameLen(matchBits0);
                     int nameLen1 = nameLen(matchBits1);
                     nameWord0 = maskWord(nameWord0, matchBits0);
-                    // bit 3 of nameLen0 is on iff semicolon is not in nameWord0.
-                    // this broadcasts bit 3 across the whole long word.
                     long nameWord1Mask = (long) nameLen0 << 60 >> 63;
-                    // nameWord1 must be zero if semicolon is in nameWord0
                     nameWord1 = maskWord(nameWord1, matchBits1) & nameWord1Mask;
                     nameLen1 &= (int) (nameWord1Mask & 0b111);
-                    nameLen = nameLen0 + nameLen1 + 1; // we'll include the semicolon in the name
+                    nameLen = nameLen0 + nameLen1 + 1;
                     lastNameWord = (nameWord0 & ~nameWord1Mask) | nameWord1;
 
                     cursor += nameLen;
@@ -244,25 +251,25 @@ public class CalculateAverageBranchMiss {
 
         private StatsAcc findAcc2(long hash, long nameWord0, long nameWord1) {
             int slotPos = (int) hash & (HASHTABLE_SIZE - 1);
-            var acc = hashTable[slotPos];
+            var acc = hashtable[slotPos];
             if (acc != null && acc.hash == hash && acc.nameEquals2(nameWord0, nameWord1)) {
                 return acc;
             }
             return null;
         }
 
-        private StatsAcc ensureAcc(long hash, long nameStartOffset, int nameLen,
-                                   long nameWord0, long nameWord1, long lastNameWord) {
+        private StatsAcc ensureAcc(
+                long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord) {
             int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
             int slotPos = initialPos;
             while (true) {
-                var acc = hashTable[slotPos];
+                var acc = hashtable[slotPos];
                 if (acc == null) {
-                    acc = new StatsAcc(inputBase, hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
-                    hashTable[slotPos] = acc;
+                    acc = new StatsAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
+                    hashtable[slotPos] = acc;
                     return acc;
                 }
-                if (acc.hash == hash && acc.nameEquals(inputBase, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
+                if (acc.hash == hash && acc.nameEquals(nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
                     return acc;
                 }
                 slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
@@ -271,28 +278,22 @@ public class CalculateAverageBranchMiss {
                 }
             }
         }
-
-        private long getLong(long offset) {
-            return UNSAFE.getLong(inputBase + offset);
-        }
-
     }
 
     static class StatsAcc {
         private static final long[] emptyTail = new long[0];
         private static final int NAMETAIL_OFFSET = 2 * Long.BYTES;
-        long nameWord0;
-        long nameWord1;
-        long[] nameTail;
-        long hash;
-        int nameLen;
-        int sum;
-        int count;
-        int min;
-        int max;
+        private long nameWord0;
+        private long nameWord1;
+        private long[] nameTail;
+        private long hash;
+        private int nameLen;
+        private int sum;
+        private int count;
+        private int min;
+        private int max;
 
-        public StatsAcc(long inputBase, long hash, long nameStartOffset, int nameLen,
-                        long nameWord0, long nameWord1, long lastNameWord) {
+        public StatsAcc(long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord) {
             this.hash = hash;
             this.nameLen = nameLen;
             this.nameWord0 = nameWord0;
@@ -302,7 +303,7 @@ public class CalculateAverageBranchMiss {
                 nameTail = new long[nameTailLen];
                 int i = 0;
                 for (; i < nameTailLen - 1; i++) {
-                    nameTail[i] = getLong(inputBase, nameStartOffset + (i + 2L) * Long.BYTES);
+                    nameTail[i] = getLong(nameStartOffset + (i + 2L) * Long.BYTES);
                 }
                 nameTail[i] = lastNameWord;
             } else {
@@ -310,15 +311,13 @@ public class CalculateAverageBranchMiss {
             }
         }
 
-        private static long getLong(long base, long offset) {
-            return UNSAFE.getLong(base + offset);
-        }
-
         boolean nameEquals2(long nameWord0, long nameWord1) {
             return this.nameWord0 == nameWord0 && this.nameWord1 == nameWord1;
         }
 
-        boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord) {
+        boolean nameEquals(
+                long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord
+        ) {
             boolean mismatch0 = inputWord0 != nameWord0;
             boolean mismatch1 = inputWord1 != nameWord1;
             boolean mismatch = mismatch0 | mismatch1;
@@ -327,7 +326,7 @@ public class CalculateAverageBranchMiss {
             }
             int i = NAMETAIL_OFFSET;
             for (; i <= inputNameLen - Long.BYTES; i += Long.BYTES) {
-                if (getLong(inputBase, inputNameStart + i) != nameTail[(i - NAMETAIL_OFFSET) / 8]) {
+                if (getLong(inputNameStart + i) != nameTail[(i - NAMETAIL_OFFSET) / 8]) {
                     return false;
                 }
             }
@@ -335,10 +334,10 @@ public class CalculateAverageBranchMiss {
         }
 
         void observe(int temperature) {
-            sum += temperature;
-            count++;
-            min = Math.min(min, temperature);
-            max = Math.max(max, temperature);
+            this.sum += temperature;
+            this.count++;
+            this.min = Math.min(min, temperature);
+            this.max = Math.max(max, temperature);
         }
 
         String exportNameString() {
@@ -356,11 +355,11 @@ public class CalculateAverageBranchMiss {
     }
 
     static class StationStats implements Comparable<StationStats> {
-        String name;
-        long sum;
-        int count;
-        int min;
-        int max;
+        private final String name;
+        private long sum;
+        private int count;
+        private int min;
+        private int max;
 
         StationStats(StatsAcc acc) {
             name = acc.exportNameString();
